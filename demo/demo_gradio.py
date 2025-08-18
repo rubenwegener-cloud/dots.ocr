@@ -47,7 +47,9 @@ dots_parser = DotsOCRParser(
     port=DEFAULT_CONFIG['port_vllm'],
     dpi=200,
     min_pixels=DEFAULT_CONFIG['min_pixels'],
-    max_pixels=DEFAULT_CONFIG['max_pixels']
+    max_pixels=DEFAULT_CONFIG['max_pixels'],
+    use_hf=True,
+    use_mps=True,
 )
 
 # Store processing results
@@ -332,6 +334,7 @@ def parse_pdf_with_high_level_api(parser, pdf_path, prompt_mode):
         import shutil
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
+        print(e)
         raise e
 
 # ==================== Core Processing Function ====================

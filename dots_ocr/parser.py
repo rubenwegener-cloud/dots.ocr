@@ -513,10 +513,10 @@ def main():
         "--num_thread", type=int, default=16,
         help=""
     )
-    # parser.add_argument(
-    #     "--fitz_preprocess", type=bool, default=False,
-    #     help="False will use tikz dpi upsample pipeline, good for images which has been render with low dpi, but maybe result in higher computational costs"
-    # )
+    parser.add_argument(
+        "--no_fitz_preprocess", action='store_true',
+        help="False will use tikz dpi upsample pipeline, good for images which has been render with low dpi, but maybe result in higher computational costs"
+    )
     parser.add_argument(
         "--min_pixels", type=int, default=None,
         help=""
@@ -551,10 +551,14 @@ def main():
         use_mps=args.use_mps,
     )
 
+    fitz_preprocess = not args.no_fitz_preprocess
+    if fitz_preprocess:
+        print(f"Using fitz preprocess for image input, check the change of the image pixels")
     result = dots_ocr_parser.parse_file(
         args.input_path, 
         prompt_mode=args.prompt,
         bbox=args.bbox,
+        fitz_preprocess=fitz_preprocess,
         )
     
 

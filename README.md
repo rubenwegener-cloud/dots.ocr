@@ -14,8 +14,9 @@ dots.ocr: Multilingual Document Layout Parsing in a Single Vision-Language Model
 
 <div align="center">
   <a href="https://dotsocr.xiaohongshu.com" target="_blank" rel="noopener noreferrer"><strong>🖥️ Live Demo</strong></a> | 
-  <a href="https://raw.githubusercontent.com/rednote-hilab/dots.ocr/master/assets/wechat.jpg" target="_blank" rel="noopener noreferrer"><strong>💬 WeChat</strong></a> | 
-  <a href="https://www.xiaohongshu.com/user/profile/683ffe42000000001d021a4c" target="_blank" rel="noopener noreferrer"><strong>📕 rednote</strong></a>
+  <a href="https://raw.githubusercontent.com/rednote-hilab/dots.ocr/master/assets/wechat.png" target="_blank" rel="noopener noreferrer"><strong>💬 WeChat</strong></a> | 
+  <a href="https://www.xiaohongshu.com/user/profile/683ffe42000000001d021a4c" target="_blank" rel="noopener noreferrer"><strong>📕 rednote</strong></a> | 
+  <a href="https://x.com/rednotehilab" target="_blank" rel="noopener noreferrer"><strong>🐦 X</strong></a>
 </div>
 
 </div>
@@ -1130,6 +1131,10 @@ print(output_text)
 ```
 
 </details>
+
+### Hugginface inference with CPU
+Please refer to [CPU inference](https://github.com/rednote-hilab/dots.ocr/issues/1#issuecomment-3148962536)
+
 
 ## 3. Document Parse
 **Based on vLLM server**, you can parse an image or a pdf file using the following commands:

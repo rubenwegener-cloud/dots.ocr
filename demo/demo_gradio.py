@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from PIL import Image
 import requests
+import shutil # Import shutil for cleanup
 
 # Local tool imports
 from dots_ocr.utils import dict_promptmode_to_prompt
@@ -52,28 +53,28 @@ dots_parser = DotsOCRParser(
     use_mps=True,
 )
 
-# Store processing results
-processing_results = {
-    'original_image': None,
-    'processed_image': None,
-    'layout_result': None,
-    'markdown_content': None,
-    'cells_data': None,
-    'temp_dir': None,
-    'session_id': None,
-    'result_paths': None,
-    'pdf_results': None  # Store multi-page PDF results
-}
-
-# PDF caching mechanism
-pdf_cache = {
-    "images": [],
-    "current_page": 0,
-    "total_pages": 0,
-    "file_type": None,  # 'image' or 'pdf'
-    "is_parsed": False,  # Whether it has been parsed
-    "results": []  # Store parsing results for each page
-}
+def get_initial_session_state():
+    return {
+        'processing_results': {
+            'original_image': None,
+            'processed_image': None,
+            'layout_result': None,
+            'markdown_content': None,
+            'cells_data': None,
+            'temp_dir': None,
+            'session_id': None,
+            'result_paths': None,
+            'pdf_results': None
+        },
+        'pdf_cache': {
+            "images": [],
+            "current_page": 0,
+            "total_pages": 0,
+            "file_type": None,
+            "is_parsed": False,
+            "results": []
+        }
+    }
 
 def read_image_v2(img):
     """Reads an image, supports URLs and local paths"""
@@ -89,32 +90,27 @@ def read_image_v2(img):
         raise ValueError(f"Invalid image type: {type(img)}")
     return img
 
-def load_file_for_preview(file_path):
+def load_file_for_preview(file_path, session_state):
     """Loads a file for preview, supports PDF and image files"""
-    global pdf_cache
+    pdf_cache = session_state['pdf_cache']
     
     if not file_path or not os.path.exists(file_path):
-        return None, "<div id='page_info_box'>0 / 0</div>"
+        return None, "<div id='page_info_box'>0 / 0</div>", session_state
     
     file_ext = os.path.splitext(file_path)[1].lower()
     
-    if file_ext == '.pdf':
-        try:
-            # Read PDF and convert to images (one image per page)
+    try:
+        if file_ext == '.pdf':
             pages = load_images_from_pdf(file_path)
             pdf_cache["file_type"] = "pdf"
-        except Exception as e:
-            return None, f"<div id='page_info_box'>PDF loading failed: {str(e)}</div>"
-    elif file_ext in ['.jpg', '.jpeg', '.png']:
-        # For image files, read directly as a single-page image
-        try:
+        elif file_ext in ['.jpg', '.jpeg', '.png']:
             image = Image.open(file_path)
             pages = [image]
             pdf_cache["file_type"] = "image"
-        except Exception as e:
-            return None, f"<div id='page_info_box'>Image loading failed: {str(e)}</div>"
-    else:
-        return None, "<div id='page_info_box'>Unsupported file format</div>"
+        else:
+            return None, "<div id='page_info_box'>Unsupported file format</div>", session_state
+    except Exception as e:
+        return None, f"<div id='page_info_box'>PDF loading failed: {str(e)}</div>", session_state
     
     pdf_cache["images"] = pages
     pdf_cache["current_page"] = 0
@@ -122,14 +118,14 @@ def load_file_for_preview(file_path):
     pdf_cache["is_parsed"] = False
     pdf_cache["results"] = []
     
-    return pages[0], f"<div id='page_info_box'>1 / {len(pages)}</div>"
+    return pages[0], f"<div id='page_info_box'>1 / {len(pages)}</div>", session_state
 
-def turn_page(direction):
+def turn_page(direction, session_state):
     """Page turning function"""
-    global pdf_cache
+    pdf_cache = session_state['pdf_cache']
     
     if not pdf_cache["images"]:
-        return None, "<div id='page_info_box'>0 / 0</div>", "", ""
+        return None, "<div id='page_info_box'>0 / 0</div>", "", session_state
 
     if direction == "prev":
         pdf_cache["current_page"] = max(0, pdf_cache["current_page"] - 1)
@@ -140,27 +136,18 @@ def turn_page(direction):
     current_image = pdf_cache["images"][index]  # Use the original image by default
     page_info = f"<div id='page_info_box'>{index + 1} / {pdf_cache['total_pages']}</div>"
     
-    # If parsed, display the results for the current page
-    current_md = ""
-    current_md_raw = ""
     current_json = ""
     if pdf_cache["is_parsed"] and index < len(pdf_cache["results"]):
         result = pdf_cache["results"][index]
-        if 'md_content' in result:
-            # Get the raw markdown content
-            current_md_raw = result['md_content']
-            # Process the content after LaTeX rendering
-            current_md = result['md_content'] if result['md_content'] else ""
-        if 'cells_data' in result:
+        if 'cells_data' in result and result['cells_data']:
             try:
                 current_json = json.dumps(result['cells_data'], ensure_ascii=False, indent=2)
             except:
                 current_json = str(result.get('cells_data', ''))
-        # Use the image with layout boxes (if available)
         if 'layout_image' in result and result['layout_image']:
             current_image = result['layout_image']
     
-    return current_image, page_info, current_json
+    return current_image, page_info, current_json, session_state
 
 def get_test_images():
     """Gets the list of test images"""
@@ -170,13 +157,6 @@ def get_test_images():
         test_images = [os.path.join(test_dir, name) for name in os.listdir(test_dir) 
                       if name.lower().endswith(('.png', '.jpg', '.jpeg', '.pdf'))]
     return test_images
-
-def convert_image_to_base64(image):
-    """Converts a PIL image to base64 encoding"""
-    buffered = io.BytesIO()
-    image.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return f"data:image/png;base64,{img_str}"
 
 def create_temp_session_dir():
     """Creates a unique temporary directory for each processing request"""
@@ -200,7 +180,6 @@ def parse_image_with_high_level_api(parser, image, prompt_mode, fitz_preprocess=
         # Use the high-level API parse_image
         filename = f"demo_{session_id}"
         results = parser.parse_image(
-            # input_path=temp_image_path,
             input_path=image,
             filename=filename, 
             prompt_mode=prompt_mode,
@@ -214,46 +193,32 @@ def parse_image_with_high_level_api(parser, image, prompt_mode, fitz_preprocess=
         
         result = results[0]  # parse_image returns a list with a single result
         
-        # Read the result files
         layout_image = None
-        cells_data = None
-        md_content = None
-        raw_response = None
-        filtered = False
-        
-        # Read the layout image
         if 'layout_image_path' in result and os.path.exists(result['layout_image_path']):
             layout_image = Image.open(result['layout_image_path'])
         
-        # Read the JSON data
+        cells_data = None
         if 'layout_info_path' in result and os.path.exists(result['layout_info_path']):
             with open(result['layout_info_path'], 'r', encoding='utf-8') as f:
                 cells_data = json.load(f)
         
-        # Read the Markdown content
+        md_content = None
         if 'md_content_path' in result and os.path.exists(result['md_content_path']):
             with open(result['md_content_path'], 'r', encoding='utf-8') as f:
                 md_content = f.read()
-        
-        # Check for the raw response file (when JSON parsing fails)
-        if 'filtered' in result:
-            filtered = result['filtered']
         
         return {
             'layout_image': layout_image,
             'cells_data': cells_data,
             'md_content': md_content,
-            'filtered': filtered,
+            'filtered': result.get('filtered', False),
             'temp_dir': temp_dir,
             'session_id': session_id,
             'result_paths': result,
-            'input_width': result['input_width'],
-            'input_height': result['input_height'],
+            'input_width': result.get('input_width', 0),
+            'input_height': result.get('input_height', 0),
         }
-        
     except Exception as e:
-        # Clean up the temporary directory on error
-        import shutil
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
         raise e
@@ -309,17 +274,10 @@ def parse_pdf_with_high_level_api(parser, pdf_path, prompt_mode):
                     page_content = f.read()
                     page_result['md_content'] = page_content
                     all_md_content.append(page_content)
-            
-            # Check for the raw response file (when JSON parsing fails)
-            page_result['filtered'] = False
-            if 'filtered' in page_result:
-                page_result['filtered'] = page_result['filtered']
-
+            page_result['filtered'] = result.get('filtered', False)
             parsed_results.append(page_result)
         
-        # Merge the content of all pages
         combined_md = "\n\n---\n\n".join(all_md_content) if all_md_content else ""
-        
         return {
             'parsed_results': parsed_results,
             'combined_md_content': combined_md,
@@ -330,43 +288,31 @@ def parse_pdf_with_high_level_api(parser, pdf_path, prompt_mode):
         }
         
     except Exception as e:
-        # Clean up the temporary directory on error
-        import shutil
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
         print(e)
         raise e
 
 # ==================== Core Processing Function ====================
-def process_image_inference(test_image_input, file_input,
+def process_image_inference(session_state, test_image_input, file_input,
                           prompt_mode, server_ip, server_port, min_pixels, max_pixels,
                           fitz_preprocess=False
                           ):
     """Core function to handle image/PDF inference"""
-    global current_config, processing_results, dots_parser, pdf_cache
+    # Use session_state instead of global variables
+    processing_results = session_state['processing_results']
+    pdf_cache = session_state['pdf_cache']
     
-    # First, clean up previous processing results to avoid confusion with the download button
     if processing_results.get('temp_dir') and os.path.exists(processing_results['temp_dir']):
-        import shutil
         try:
             shutil.rmtree(processing_results['temp_dir'], ignore_errors=True)
         except Exception as e:
             print(f"Failed to clean up previous temporary directory: {e}")
     
-    # Reset processing results
-    processing_results = {
-        'original_image': None,
-        'processed_image': None,
-        'layout_result': None,
-        'markdown_content': None,
-        'cells_data': None,
-        'temp_dir': None,
-        'session_id': None,
-        'result_paths': None,
-        'pdf_results': None
-    }
+    # Reset processing results for the current session
+    session_state['processing_results'] = get_initial_session_state()['processing_results']
+    processing_results = session_state['processing_results']
     
-    # Update configuration
     current_config.update({
         'ip': server_ip,
         'port_vllm': server_port,
@@ -380,294 +326,119 @@ def process_image_inference(test_image_input, file_input,
     dots_parser.min_pixels = min_pixels
     dots_parser.max_pixels = max_pixels
     
-    # Determine the input source
-    input_file_path = None
-    image = None
+    input_file_path = file_input if file_input else test_image_input
     
-    # Prioritize file input (supports PDF)
-    if file_input is not None:
-        input_file_path = file_input
-        file_ext = os.path.splitext(input_file_path)[1].lower()
-        
-        if file_ext == '.pdf':
-            # PDF file processing
-            try:
-                return process_pdf_file(input_file_path, prompt_mode)
-            except Exception as e:
-                return None, f"PDF processing failed: {e}", "", "", gr.update(value=None), None, ""
-        elif file_ext in ['.jpg', '.jpeg', '.png']:
-            # Image file processing
-            try:
-                image = Image.open(input_file_path)
-            except Exception as e:
-                return None, f"Failed to read image file: {e}", "", "", gr.update(value=None), None, ""
+    if not input_file_path:
+        return None, "Please upload image/PDF file or select test image", "", "", gr.update(value=None), None, "", session_state
     
-    # If no file input, check the test image input
-    if image is None:
-        if test_image_input and test_image_input != "":
-            file_ext = os.path.splitext(test_image_input)[1].lower()
-            if file_ext == '.pdf':
-                return process_pdf_file(test_image_input, prompt_mode)
-            else:
-                try:
-                    image = read_image_v2(test_image_input)
-                except Exception as e:
-                    return None, f"Failed to read test image: {e}", "", "", gr.update(value=None), gr.update(value=None), None, ""
-    
-    if image is None:
-        return None, "Please upload image/PDF file or select test image", "", "", gr.update(value=None), None, ""
+    file_ext = os.path.splitext(input_file_path)[1].lower()
     
     try:
-        # Clear PDF cache (for image processing)
-        pdf_cache["images"] = []
-        pdf_cache["current_page"] = 0
-        pdf_cache["total_pages"] = 0
-        pdf_cache["is_parsed"] = False
-        pdf_cache["results"] = []
-        
-        # Process using the high-level API of DotsOCRParser
-        original_image = image
-        parse_result = parse_image_with_high_level_api(dots_parser, image, prompt_mode, fitz_preprocess)
-        
-        # Extract parsing results
-        layout_image = parse_result['layout_image']
-        cells_data = parse_result['cells_data']
-        md_content = parse_result['md_content']
-        filtered = parse_result['filtered']
-        
-        # Handle parsing failure case
-        if filtered:
-            # JSON parsing failed, only text content is available
-            info_text = f"""
-**Image Information:**
-- Original Size: {original_image.width} x {original_image.height}
-- Processing: JSON parsing failed, using cleaned text output
-- Server: {current_config['ip']}:{current_config['port_vllm']}
-- Session ID: {parse_result['session_id']}
-            """
+        if file_ext == '.pdf':
+            # MINIMAL CHANGE: The `process_pdf_file` function is now inlined and uses session_state.
+            preview_image, page_info, session_state = load_file_for_preview(input_file_path, session_state)
+            pdf_result = parse_pdf_with_high_level_api(dots_parser, input_file_path, prompt_mode)
             
-            # Store results
+            session_state['pdf_cache']["is_parsed"] = True
+            session_state['pdf_cache']["results"] = pdf_result['parsed_results']
+            
             processing_results.update({
-                'original_image': original_image,
-                'processed_image': None,
-                'layout_result': None,
-                'markdown_content': md_content,
-                'cells_data': None,
-                'temp_dir': parse_result['temp_dir'],
-                'session_id': parse_result['session_id'],
+                'markdown_content': pdf_result['combined_md_content'],
+                'cells_data': pdf_result['combined_cells_data'],
+                'temp_dir': pdf_result['temp_dir'],
+                'session_id': pdf_result['session_id'],
+                'pdf_results': pdf_result['parsed_results']
+            })
+            
+            total_elements = len(pdf_result['combined_cells_data'])
+            info_text = f"**PDF Information:**\n- Total Pages: {pdf_result['total_pages']}\n- Server: {current_config['ip']}:{current_config['port_vllm']}\n- Total Detected Elements: {total_elements}\n- Session ID: {pdf_result['session_id']}"
+            
+            current_page_layout_image = preview_image
+            current_page_json = ""
+            if session_state['pdf_cache']["results"]:
+                first_result = session_state['pdf_cache']["results"][0]
+                if 'layout_image' in first_result and first_result['layout_image']:
+                    current_page_layout_image = first_result['layout_image']
+                if first_result.get('cells_data'):
+                    try:
+                        current_page_json = json.dumps(first_result['cells_data'], ensure_ascii=False, indent=2)
+                    except:
+                        current_page_json = str(first_result['cells_data'])
+
+            download_zip_path = None
+            if pdf_result['temp_dir']:
+                download_zip_path = os.path.join(pdf_result['temp_dir'], f"layout_results_{pdf_result['session_id']}.zip")
+                with zipfile.ZipFile(download_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for root, _, files in os.walk(pdf_result['temp_dir']):
+                        for file in files:
+                            if not file.endswith('.zip'): zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), pdf_result['temp_dir']))
+
+            return (
+                current_page_layout_image, info_text, pdf_result['combined_md_content'] or "No markdown content generated",
+                pdf_result['combined_md_content'] or "No markdown content generated",
+                gr.update(value=download_zip_path, visible=bool(download_zip_path)), page_info, current_page_json, session_state
+            )
+        
+        else: # Image processing
+            image = read_image_v2(input_file_path)
+            session_state['pdf_cache'] = get_initial_session_state()['pdf_cache']
+            
+            original_image = image
+            parse_result = parse_image_with_high_level_api(dots_parser, image, prompt_mode, fitz_preprocess)
+            
+            if parse_result['filtered']:
+                 info_text = f"**Image Information:**\n- Original Size: {original_image.width} x {original_image.height}\n- Processing: JSON parsing failed, using cleaned text output\n- Server: {current_config['ip']}:{current_config['port_vllm']}\n- Session ID: {parse_result['session_id']}"
+                 processing_results.update({
+                     'original_image': original_image, 'markdown_content': parse_result['md_content'],
+                     'temp_dir': parse_result['temp_dir'], 'session_id': parse_result['session_id'],
+                     'result_paths': parse_result['result_paths']
+                 })
+                 return original_image, info_text, parse_result['md_content'], parse_result['md_content'], gr.update(visible=False), None, "", session_state
+            
+            md_content_raw = parse_result['md_content'] or "No markdown content generated"
+            processing_results.update({
+                'original_image': original_image, 'layout_result': parse_result['layout_image'],
+                'markdown_content': parse_result['md_content'], 'cells_data': parse_result['cells_data'],
+                'temp_dir': parse_result['temp_dir'], 'session_id': parse_result['session_id'],
                 'result_paths': parse_result['result_paths']
             })
             
+            num_elements = len(parse_result['cells_data']) if parse_result['cells_data'] else 0
+            info_text = f"**Image Information:**\n- Original Size: {original_image.width} x {original_image.height}\n- Model Input Size: {parse_result['input_width']} x {parse_result['input_height']}\n- Server: {current_config['ip']}:{current_config['port_vllm']}\n- Detected {num_elements} layout elements\n- Session ID: {parse_result['session_id']}"
+            
+            current_json = json.dumps(parse_result['cells_data'], ensure_ascii=False, indent=2) if parse_result['cells_data'] else ""
+            
+            download_zip_path = None
+            if parse_result['temp_dir']:
+                download_zip_path = os.path.join(parse_result['temp_dir'], f"layout_results_{parse_result['session_id']}.zip")
+                with zipfile.ZipFile(download_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for root, _, files in os.walk(parse_result['temp_dir']):
+                        for file in files:
+                            if not file.endswith('.zip'): zipf.write(os.path.join(root, file), os.path.relpath(os.path.join(root, file), parse_result['temp_dir']))
+            
             return (
-                original_image,  # No layout image
-                info_text,
-                md_content,
-                md_content,  # Display raw markdown text
-                gr.update(visible=False),  # Hide download button
-                None,  # Page info
-                ""     # Current page JSON output
+                parse_result['layout_image'], info_text, parse_result['md_content'] or "No markdown content generated",
+                md_content_raw, gr.update(value=download_zip_path, visible=bool(download_zip_path)),
+                None, current_json, session_state
             )
-        
-        # JSON parsing successful case
-        # Save the raw markdown content (before LaTeX processing)
-        md_content_raw = md_content or "No markdown content generated"
-        
-        # Store results
-        processing_results.update({
-            'original_image': original_image,
-            'processed_image': None,  # High-level API does not return processed_image
-            'layout_result': layout_image,
-            'markdown_content': md_content,
-            'cells_data': cells_data,
-            'temp_dir': parse_result['temp_dir'],
-            'session_id': parse_result['session_id'],
-            'result_paths': parse_result['result_paths']
-        })
-        
-        # Prepare display information
-        num_elements = len(cells_data) if cells_data else 0
-        info_text = f"""
-**Image Information:**
-- Original Size: {original_image.width} x {original_image.height}
-- Model Input Size: {parse_result['input_width']} x {parse_result['input_height']}
-- Server: {current_config['ip']}:{current_config['port_vllm']}
-- Detected {num_elements} layout elements
-- Session ID: {parse_result['session_id']}
-        """
-        
-        # Current page JSON output
-        current_json = ""
-        if cells_data:
-            try:
-                current_json = json.dumps(cells_data, ensure_ascii=False, indent=2)
-            except:
-                current_json = str(cells_data)
-        
-        # Create the download ZIP file
-        download_zip_path = None
-        if parse_result['temp_dir']:
-            download_zip_path = os.path.join(parse_result['temp_dir'], f"layout_results_{parse_result['session_id']}.zip")
-            try:
-                with zipfile.ZipFile(download_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for root, dirs, files in os.walk(parse_result['temp_dir']):
-                        for file in files:
-                            if file.endswith('.zip'):
-                                continue
-                            file_path = os.path.join(root, file)
-                            arcname = os.path.relpath(file_path, parse_result['temp_dir'])
-                            zipf.write(file_path, arcname)
-            except Exception as e:
-                print(f"Failed to create download ZIP: {e}")
-                download_zip_path = None
-        
-        return (
-            layout_image,
-            info_text,
-            md_content or "No markdown content generated",
-            md_content_raw,  # Raw markdown text
-            gr.update(value=download_zip_path, visible=True) if download_zip_path else gr.update(visible=False),  # Set the download file
-            None,  # Page info (not displayed for image processing)
-            current_json     # Current page JSON
-        )
-        
     except Exception as e:
-        return None, f"Error during processing: {e}", "", "", gr.update(value=None), None, ""
+        import traceback
+        traceback.print_exc()
+        return None, f"Error during processing: {e}", "", "", gr.update(value=None), None, "", session_state
 
-def process_pdf_file(pdf_path, prompt_mode):
-    """Dedicated function for processing PDF files"""
-    global pdf_cache, processing_results, dots_parser
-    
-    try:
-        # First, load the PDF for preview
-        preview_image, page_info = load_file_for_preview(pdf_path)
-        
-        # Parse the PDF using DotsOCRParser
-        pdf_result = parse_pdf_with_high_level_api(dots_parser, pdf_path, prompt_mode)
-        
-        # Update the PDF cache
-        pdf_cache["is_parsed"] = True
-        pdf_cache["results"] = pdf_result['parsed_results']
-        
-        # Handle LaTeX table rendering
-        combined_md = pdf_result['combined_md_content']
-        combined_md_raw = combined_md or "No markdown content generated"  # Save the raw content
-
-        # Store results
-        processing_results.update({
-            'original_image': None,
-            'processed_image': None,
-            'layout_result': None,
-            'markdown_content': combined_md,
-            'cells_data': pdf_result['combined_cells_data'],
-            'temp_dir': pdf_result['temp_dir'],
-            'session_id': pdf_result['session_id'],
-            'result_paths': None,
-            'pdf_results': pdf_result['parsed_results']
-        })
-        
-        # Prepare display information
-        total_elements = len(pdf_result['combined_cells_data'])
-        info_text = f"""
-**PDF Information:**
-- Total Pages: {pdf_result['total_pages']}
-- Server: {current_config['ip']}:{current_config['port_vllm']}
-- Total Detected Elements: {total_elements}
-- Session ID: {pdf_result['session_id']}
-        """
-        
-        # Content of the current page (first page)
-        current_page_md = ""
-        current_page_md_raw = ""
-        current_page_json = ""
-        current_page_layout_image = preview_image  # Use the original preview image by default
-        
-        if pdf_cache["results"] and len(pdf_cache["results"]) > 0:
-            current_result = pdf_cache["results"][0]
-            if current_result['md_content']:
-                # Raw markdown content
-                current_page_md_raw = current_result['md_content']
-                # Process the content after LaTeX rendering
-
-                current_page_md = current_result['md_content']
-            if current_result['cells_data']:
-                try:
-                    current_page_json = json.dumps(current_result['cells_data'], ensure_ascii=False, indent=2)
-                except:
-                    current_page_json = str(current_result['cells_data'])
-            # Use the image with layout boxes (if available)
-            if 'layout_image' in current_result and current_result['layout_image']:
-                current_page_layout_image = current_result['layout_image']
-        
-        # Create the download ZIP file
-        download_zip_path = None
-        if pdf_result['temp_dir']:
-            download_zip_path = os.path.join(pdf_result['temp_dir'], f"layout_results_{pdf_result['session_id']}.zip")
-            try:
-                with zipfile.ZipFile(download_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                    for root, dirs, files in os.walk(pdf_result['temp_dir']):
-                        for file in files:
-                            if file.endswith('.zip'):
-                                continue
-                            file_path = os.path.join(root, file)
-                            arcname = os.path.relpath(file_path, pdf_result['temp_dir'])
-                            zipf.write(file_path, arcname)
-            except Exception as e:
-                print(f"Failed to create download ZIP: {e}")
-                download_zip_path = None
-        
-        return (
-            current_page_layout_image,  # Use the image with layout boxes
-            info_text,
-            combined_md or "No markdown content generated",  # Display the markdown for the entire PDF
-            combined_md_raw or "No markdown content generated",  # Display the raw markdown for the entire PDF
-            gr.update(value=download_zip_path, visible=True) if download_zip_path else gr.update(visible=False),  # Set the download file
-            page_info,
-            current_page_json
-        )
-        
-    except Exception as e:
-        # Reset the PDF cache
-        pdf_cache["images"] = []
-        pdf_cache["current_page"] = 0
-        pdf_cache["total_pages"] = 0
-        pdf_cache["is_parsed"] = False
-        pdf_cache["results"] = []
-        raise e
-
-def clear_all_data():
+# MINIMAL CHANGE: Functions now take `session_state` as an argument.
+def clear_all_data(session_state):
     """Clears all data"""
-    global processing_results, pdf_cache
+    processing_results = session_state['processing_results']
     
-    # Clean up the temporary directory
     if processing_results.get('temp_dir') and os.path.exists(processing_results['temp_dir']):
-        import shutil
         try:
             shutil.rmtree(processing_results['temp_dir'], ignore_errors=True)
         except Exception as e:
             print(f"Failed to clean up temporary directory: {e}")
     
-    # Reset processing results
-    processing_results = {
-        'original_image': None,
-        'processed_image': None,
-        'layout_result': None,
-        'markdown_content': None,
-        'cells_data': None,
-        'temp_dir': None,
-        'session_id': None,
-        'result_paths': None,
-        'pdf_results': None
-    }
-    
-    # Reset the PDF cache
-    pdf_cache = {
-        "images": [],
-        "current_page": 0,
-        "total_pages": 0,
-        "file_type": None,
-        "is_parsed": False,
-        "results": []
-    }
+    # Reset the session state by returning a new initial state
+    new_session_state = get_initial_session_state()
     
     return (
         None,  # Clear file input
@@ -678,7 +449,8 @@ def clear_all_data():
         "🕐 Waiting for parsing result...",    # Clear raw Markdown text
         gr.update(visible=False),  # Hide download button
         "<div id='page_info_box'>0 / 0</div>",  # Reset page info
-        "🕐 Waiting for parsing result..."     # Clear current page JSON
+        "🕐 Waiting for parsing result...",     # Clear current page JSON
+        new_session_state
     )
 
 def update_prompt_display(prompt_mode):
@@ -749,6 +521,7 @@ def create_gradio_interface():
     """
     
     with gr.Blocks(theme="ocean", css=css, title='dots.ocr') as demo:
+        session_state = gr.State(value=get_initial_session_state())
         
         # Title
         gr.HTML("""
@@ -782,7 +555,6 @@ def create_gradio_interface():
                     label="Select Prompt",
                     choices=["prompt_layout_all_en", "prompt_layout_only_en", "prompt_ocr"],
                     value="prompt_layout_all_en",
-                    show_label=True
                 )
                 
                 # Display current prompt content
@@ -847,11 +619,10 @@ def create_gradio_interface():
                             with gr.TabItem("Markdown Render Preview"):
                                 md_output = gr.Markdown(
                                     "## Please click the parse button to parse or select for single-task recognition...",
-                                    label="Markdown Preview",
                                     max_height=600,
                                     latex_delimiters=[
                                         {"left": "$$", "right": "$$", "display": True},
-                                        {"left": "$", "right": "$", "display": False},
+                                        {"left": "$", "right": "$", "display": False}
                                     ],
                                     show_copy_button=False,
                                     elem_id="markdown_output"
@@ -891,61 +662,68 @@ def create_gradio_interface():
             fn=update_prompt_display,
             inputs=prompt_mode,
             outputs=prompt_display,
-            show_progress=False
         )
         
         # Show preview on file upload
         file_input.upload(
+            # fn=lambda file_data, state: load_file_for_preview(file_data, state),
             fn=load_file_for_preview,
-            inputs=file_input,
-            outputs=[result_image, page_info],
-            show_progress=False
+            inputs=[file_input, session_state],
+            outputs=[result_image, page_info, session_state]
         )
         
-        # Page navigation
+        # Also handle test image selection
+        test_image_input.change(
+            # fn=lambda path, state: load_file_for_preview(path, state),
+            fn=load_file_for_preview,
+            inputs=[test_image_input, session_state],
+            outputs=[result_image, page_info, session_state]
+        )
+
         prev_btn.click(
-            fn=lambda: turn_page("prev"), 
-            outputs=[result_image, page_info, current_page_json],
-            show_progress=False
+            fn=lambda s: turn_page("prev", s),
+            inputs=[session_state], 
+            outputs=[result_image, page_info, current_page_json, session_state]
         )
         
         next_btn.click(
-            fn=lambda: turn_page("next"), 
-            outputs=[result_image, page_info, current_page_json],
-            show_progress=False
+            fn=lambda s: turn_page("next", s),
+            inputs=[session_state], 
+            outputs=[result_image, page_info, current_page_json, session_state]
         )
         
         process_btn.click(
             fn=process_image_inference,
             inputs=[
-                test_image_input, file_input,
+                session_state, test_image_input, file_input,
                 prompt_mode, server_ip, server_port, min_pixels, max_pixels, 
                 fitz_preprocess
             ],
             outputs=[
                 result_image, info_display, md_output, md_raw_output,
-                download_btn, page_info, current_page_json
-            ],
-            show_progress=True
+                download_btn, page_info, current_page_json, session_state
+            ]
         )
         
         clear_btn.click(
             fn=clear_all_data,
+            inputs=[session_state],
             outputs=[
                 file_input, test_image_input,
                 result_image, info_display, md_output, md_raw_output,
-                download_btn, page_info, current_page_json
-            ],
-            show_progress=False
+                download_btn, page_info, current_page_json, session_state
+            ]
         )
     
     return demo
 
 # ==================== Main Program ====================
 if __name__ == "__main__":
+    import sys
+    port = int(sys.argv[1])
     demo = create_gradio_interface()
     demo.queue().launch(
         server_name="0.0.0.0", 
-        server_port=7860, 
+        server_port=port, 
         debug=True
     )

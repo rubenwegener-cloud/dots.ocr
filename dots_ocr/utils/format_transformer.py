@@ -136,7 +136,8 @@ def clean_text(text: str) -> str:
     text = text.strip()
     
     # Replace multiple consecutive whitespace characters with a single space
-    text = re.sub(r'\s+', ' ', text)
+    if text[:2] == '`$' and text[-2:] == '$`':
+        text = text[1:-1]
     
     return text
 

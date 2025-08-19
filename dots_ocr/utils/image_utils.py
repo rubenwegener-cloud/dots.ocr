@@ -68,7 +68,7 @@ def PILimage_to_base64(image, format='PNG'):
     buffered = BytesIO()
     image.save(buffered, format=format)
     base64_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
-    return f"data:image;base64,{base64_str}"
+    return f"data:image/{format.lower()};base64,{base64_str}"
 
 
 def to_rgb(pil_image: Image.Image) -> Image.Image:

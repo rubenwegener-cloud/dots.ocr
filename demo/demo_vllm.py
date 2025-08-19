@@ -29,10 +29,11 @@ def main():
     response = inference_with_vllm(
         image,
         prompt, 
-        ip="localhost",
-        port=8000,
+        ip=args.ip,
+        port=args.port,
         temperature=0.1,
         top_p=0.9,
+        model_name=args.model_name,
     )
     print(f"response: {response}")
 

@@ -184,19 +184,6 @@ class DotsOCRParser:
 
         # Start generation in a separate thread
         def generate():
-            from transformers import StoppingCriteria, StoppingCriteriaList
-            class RegexStop(StoppingCriteria):
-                def __init__(self, tokenizer, pattern):
-                    import re
-                    self.tok = tokenizer
-                    self.re = re.compile(pattern, re.S)
-                    self.buf = ""
-                def __call__(self, input_ids, scores, **kwargs):
-                    self.buf = self.tok.decode(input_ids[0], skip_special_tokens=True)
-                    return bool(self.re.search(self.buf))
-            stops = StoppingCriteriaList([RegexStop(self.processor.tokenizer, r"\n\n$|</table>")])
-                        
-           
             gen_kwargs = dict(
                 max_new_tokens=24000,   
                 do_sample=False,
@@ -206,8 +193,7 @@ class DotsOCRParser:
                 num_beams=1,  # Use greedy decoding for speed
                 early_stopping=True,  # Stop early if EOS token is generated
                 pad_token_id=self.processor.tokenizer.eos_token_id,
-                eos_token_id=[self.processor.tokenizer.eos_token_id],
-                stopping_criteria=stops,    
+                eos_token_id=[self.processor.tokenizer.eos_token_id]
             )
             with torch.inference_mode():
                 self.model.generate(**inputs, streamer=streamer, **gen_kwargs)

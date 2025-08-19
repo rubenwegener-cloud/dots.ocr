@@ -178,7 +178,7 @@ class DotsOCRParser:
             self.processor.tokenizer,
             skip_prompt=True,
             skip_special_tokens=True,
-            timeout=10,
+            timeout=100,
         )
         generated_text = []
 

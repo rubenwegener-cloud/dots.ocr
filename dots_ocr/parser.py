@@ -196,9 +196,9 @@ class DotsOCRParser:
                     return bool(self.re.search(self.buf))
             stops = StoppingCriteriaList([RegexStop(self.processor.tokenizer, r"\n\n$|</table>")])
                         
-            # 2) 合理上限 + 停止
+           
             gen_kwargs = dict(
-                max_new_tokens=10240,                # 合理上限
+                max_new_tokens=24000,   
                 do_sample=False,
                 temperature=None,
                 # Performance optimizations
@@ -223,7 +223,7 @@ class DotsOCRParser:
             for new_text in streamer:
                 generated_text.append(new_text)
                 buf.append(new_text)
-                # 定时/定量 flush 一次，并清空 buf —— 避免 O(n^2) 重复打印
+                
                 if len("".join(buf)) >= 1024 or (time.time() - last_flush) > 0.2:
                     print("".join(buf), end="", flush=False)
                     buf.clear()
